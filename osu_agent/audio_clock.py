@@ -129,12 +129,15 @@ class BackgroundRecorder:
         t_end = parts[-1][0]
         return audio[-need:], t_end
 
-    def locate(self, ref: np.ndarray, seconds: float = 3.0):
-        """Позиция трека по последним `seconds` секундам: (позиция_конца, score, t_end)."""
+    def locate(self, ref: np.ndarray, seconds: float = 3.0, hint: float | None = None):
+        """Позиция трека по последним `seconds` секундам: (позиция_конца, score, t_end).
+
+        `hint` — ожидаемая позиция (сек) для быстрого поиска в окне ±30 с.
+        """
         audio, t_end = self.recent(seconds)
         if audio is None or len(audio) < self.sr // 2:
             return None
-        pos, score = find_offset(ref, audio, self.sr)
+        pos, score = find_offset(ref, audio, self.sr, hint=hint)
         return pos, score, t_end
 
     def stop(self) -> None:
@@ -156,26 +159,41 @@ def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
     return np.interp(idx, np.arange(len(x)), x).astype(np.float32)
 
 
-def _ncc(ref_c: np.ndarray, seg: np.ndarray, nfft: int) -> np.ndarray:
-    """Нормированная кросс-корреляция ref и короткого окна seg (на coarse-частоте)."""
-    conv = np.fft.irfft(np.fft.rfft(ref_c, nfft) * np.fft.rfft(seg[::-1], nfft), nfft)
-    nv = len(ref_c) - len(seg) + 1
+def _ncc_prepared(seg: np.ndarray, nfft: int, R: np.ndarray, e_ref: np.ndarray,
+                  e_seg: float) -> np.ndarray:
+    """Нормированная кросс-корреляция окна с эталоном при предвычисленных FFT/энергии.
+
+    R — rfft(ref) фиксированного размера nfft; e_ref — энергия ref в окне для
+    каждого лага. Кэширование R даёт ускорение в ~2 раза, а главное — позволяет
+    считать полную корреляцию за ~десятки миллисекунд вместо секунд.
+    """
+    conv = np.fft.irfft(R * np.fft.rfft(seg[::-1], nfft), nfft)
+    nv = len(e_ref)
     corr = conv[len(seg) - 1: len(seg) - 1 + nv]
-    cs = np.concatenate(([0.0], np.cumsum(ref_c.astype(np.float64) ** 2)))
-    e_ref = cs[len(seg):] - cs[:nv]
-    denom = np.sqrt(np.maximum(e_ref * float(np.sum(seg.astype(np.float64) ** 2)), 1e-12))
+    denom = np.sqrt(np.maximum(e_ref * e_seg, 1e-12))
     return corr / denom
 
 
 def find_offset(ref: np.ndarray, rec: np.ndarray, sr: int = SR,
                 coarse_sr: int = COARSE_SR, window: float = 0.8, step: float = 0.4,
-                max_windows: int = 12):
-    """Позиция записи в эталоне: сумма NCC по нескольким окнам (устойчивее к шуму).
+                max_windows: int = 6, hint: float | None = None,
+                hint_range: float = 30.0):
+    """Позиция записи в эталоне: сумма NCC по нескольким окнам.
 
+    `hint` (сек) ограничивает зону поиска вокруг ожидаемой позиции — используется
+    для быстрой периодической перекалибровки (окно ref меньше → FFT короче).
     Возвращает (позиция_конца_записи_в_треке, score). Точность 1/coarse_sr.
     """
     ref_c = _resample(ref, sr, coarse_sr)
     rec_c = _resample(rec, sr, coarse_sr)
+
+    base_offset = 0
+    if hint is not None:
+        h0 = max(0, int((hint - hint_range) * coarse_sr))
+        h1 = min(len(ref_c), int((hint + hint_range) * coarse_sr) + len(rec_c))
+        if h1 - h0 > len(rec_c):
+            base_offset = h0
+            ref_c = ref_c[h0:h1]
 
     wlen = min(len(rec_c), int(window * coarse_sr))
     step_c = max(1, int(step * coarse_sr))
@@ -184,7 +202,12 @@ def find_offset(ref: np.ndarray, rec: np.ndarray, sr: int = SR,
 
     nfft = 1 << (len(ref_c) + wlen - 1).bit_length()
 
-    # аккумулятор по координате «позиция конца записи в треке» (в сэмплах coarse)
+    # предвычисления, общие для всех окон
+    R = np.fft.rfft(ref_c, nfft)
+    nv = len(ref_c) - wlen + 1
+    cs = np.concatenate(([0.0], np.cumsum(ref_c.astype(np.float64) ** 2)))
+    e_ref = cs[wlen:] - cs[:nv]
+
     acc = np.zeros(len(ref_c) + len(rec_c) + 2, dtype=np.float64)
     count = 0
     starts = list(range(0, len(rec_c) - wlen + 1, step_c))
@@ -193,7 +216,7 @@ def find_offset(ref: np.ndarray, rec: np.ndarray, sr: int = SR,
         starts = [starts[i] for i in keep]
     for start in starts:
         seg = rec_c[start:start + wlen]
-        ncc = _ncc(ref_c, seg, nfft)
+        ncc = _ncc_prepared(seg, nfft, R, e_ref, float(np.sum(seg.astype(np.float64) ** 2)))
         shift = len(rec_c) - start
         acc[shift: shift + len(ncc)] += ncc
         count += 1
@@ -204,13 +227,13 @@ def find_offset(ref: np.ndarray, rec: np.ndarray, sr: int = SR,
     peak = int(np.argmax(acc))
     score = float(acc[peak])
     duration = len(ref) / sr
-    position = min(peak / coarse_sr, duration)
+    position = min((peak + base_offset) / coarse_sr, duration)
     return position, score
 
 
-def locate(ref: np.ndarray, rec: np.ndarray, sr: int = SR) -> AudioMatch:
+def locate(ref: np.ndarray, rec: np.ndarray, sr: int = SR, hint: float | None = None) -> AudioMatch:
     """Позиция в треке, соответствующая концу записи loopback."""
-    pos, score = find_offset(ref, rec, sr)
+    pos, score = find_offset(ref, rec, sr, hint=hint)
     dur = len(ref) / sr
     pos = max(0.0, min(pos, dur))
     return AudioMatch(position_sec=pos, score=score, coarse_position=pos, duration_sec=dur)

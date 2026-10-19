@@ -80,6 +80,7 @@ time.sleep(1.5)  # музыка пошла
 
 pos, score = player.calibrate_position()
 print('локация: позиция %.3f c | score=%.3f' % (player.t_end_pos, score))
+player.start_relocator()  # перекалибровка в фоне, без блокировки геймплея
 
 stats = player.play(verbose=True)
 print('исполнено:', stats)

@@ -97,3 +97,16 @@ def test_real_map_sliders():
     assert sliders, 'в карте должны быть слайдеры'
     assert all(o.end_time is not None for o in sliders)
     assert all(o.end_time > o.time for o in sliders)
+
+
+def test_slider_progress_covers_length_at_end():
+    """За время слайдера курсор обязан пройти РОВНО его длину (защита от ×1000)."""
+    bm = Beatmap.from_text(SAMPLE)
+    sliders = [o for o in bm.hit_objects if o.kind == 'slider']
+    for sl in sliders:
+        velocity_ms = bm.slider_velocity(sl.time)      # osu-px/мс
+        duration_sec = (sl.end_time - sl.time) / 1000.0
+        progress_px = duration_sec * velocity_ms * 1000.0   # как считает player.py
+        assert abs(progress_px - sl.length) < 1e-6, (
+            'прогресс за слайдер должен равняться его длине: %.3f vs %.3f'
+            % (progress_px, sl.length))

@@ -156,6 +156,8 @@ TAP_HOLD_MS = 25
 _release_queue: "queue.PriorityQueue[tuple[float, int]]" = queue.PriorityQueue()
 _release_thread: threading.Thread | None = None
 _release_lock = threading.Lock()
+# клавиши, удерживаемые вручную (слайдер/спиннер): релизер не имеет права их отпускать
+_manual_holds: set[int] = set()
 
 
 def _ensure_releaser() -> None:
@@ -172,14 +174,34 @@ def _release_worker() -> None:
         now = time.perf_counter()
         if when > now:
             time.sleep(when - now)
+        # если клавиша сейчас удерживается вручную (идёт слайдер) — не отпускаем
+        if vk in _manual_holds:
+            continue
         try:
             key_up(vk)
         except OSError:
             pass
 
 
+def hold_start(vk: int) -> None:
+    """Начать удержание клавиши (слайдер/спиннер): отменяет запланированные KeyUp."""
+    _ensure_releaser()
+    _manual_holds.add(vk)
+    key_down(vk)
+
+
+def hold_end(vk: int) -> None:
+    """Завершить удержание: снять защиту и отпустить клавишу."""
+    _manual_holds.discard(vk)
+    try:
+        key_up(vk)
+    except OSError:
+        pass
+
+
 def release_all() -> None:
-    """Отпустить все запланированные клавиши немедленно (аварийный сброс)."""
+    """Отпустить все клавиши немедленно (аварийный сброс)."""
+    _manual_holds.clear()
     while not _release_queue.empty():
         try:
             _release_queue.get_nowait()

@@ -38,7 +38,7 @@ class MapPlayer:
     # ---- синхронизация ----
 
     def calibrate_position(self, timeout: float = 10.0, min_score: float = 0.30,
-                           pair_gap: float = 1.0, pair_tol: float = 0.05) -> tuple[float, float]:
+                           pair_gap: float = 0.8, pair_tol: float = 0.05) -> tuple[float, float]:
         """Дождаться НАДЁЖНОЙ локации трека (двойная проверка согласованности).
 
         Одиночная локация в начале карты ненадёжна: в буфере может быть превью из
@@ -50,7 +50,7 @@ class MapPlayer:
         deadline = time.perf_counter() + timeout
         prev = None
         while time.perf_counter() < deadline:
-            result = self.rec.locate(self.ref, 2.5)
+            result = self.rec.locate(self.ref, 2.0)
             if result is not None:
                 pos, score, t_end = result
                 if prev is not None:
@@ -68,14 +68,42 @@ class MapPlayer:
             return prev[0], prev[1]
         raise RuntimeError('не удалось определить позицию трека (score 0)')
 
-    def maybe_relocate(self, every: float = 10.0, tol: float = 0.05) -> None:
-        """Периодическая перекалибровка: обновляем привязку, если новая локация
-        согласуется с текущим ходом часов (иначе игнорируем выброс)."""
-        now = time.perf_counter()
-        if getattr(self, '_next_relocate', 0.0) > now:
+    def start_relocator(self, every: float = 5.0) -> None:
+        """Фоновый поток перекалибровки: считает позицию, НЕ блокируя геймплей.
+
+        Раньше перекалибровка вызывалась из основного цикла и блокировала его на
+        время БПФ (~секунду) — игровой цикл замирал и ноты выбрасывались как skipped.
+        """
+        import threading
+
+        self._reloc_stop = threading.Event()
+        self._reloc_lock = threading.Lock()
+        self._reloc_result = None
+
+        def loop():
+            while not self._reloc_stop.is_set():
+                hint = None
+                if self.t_end_pos is not None:
+                    hint = self.t_end_pos + (time.perf_counter() - self.t_anchor)
+                try:
+                    result = self.rec.locate(self.ref, 2.0, hint=hint)
+                except Exception:
+                    result = None
+                if result is not None:
+                    with self._reloc_lock:
+                        self._reloc_result = result
+                self._reloc_stop.wait(every)
+
+        self._reloc_thread = threading.Thread(target=loop, daemon=True, name='relocator')
+        self._reloc_thread.start()
+
+    def apply_relocation(self, tol: float = 0.05) -> None:
+        """Применить готовый фоновый замер (если он согласуется с текущими часами)."""
+        if getattr(self, '_reloc_lock', None) is None:
             return
-        self._next_relocate = now + every
-        result = self.rec.locate(self.ref, 2.5)
+        with self._reloc_lock:
+            result = self._reloc_result
+            self._reloc_result = None
         if result is None:
             return
         pos, score, t_end = result
@@ -90,6 +118,8 @@ class MapPlayer:
         return self.t_anchor + (note_time_ms / 1000.0 - self.s - self.t_end_pos)
 
     def stop(self) -> None:
+        if getattr(self, '_reloc_stop', None) is not None:
+            self._reloc_stop.set()
         idrv.release_all()
         self.rec.stop()
 
@@ -107,10 +137,12 @@ class MapPlayer:
         if path is None or len(path) < 2:
             self._tap_circle(obj, t_wall)
             return
-        velocity = self.bm.slider_velocity(obj.time)  # osu-px/мс
-        if not velocity:
+        velocity_ms = self.bm.slider_velocity(obj.time)  # osu-px/МС
+        if not velocity_ms:
             self._tap_circle(obj, t_wall)
             return
+        velocity_sec = velocity_ms * 1000.0               # osu-px/СЕК (важно: раньше
+        # здесь была ошибка размерности в 1000 раз — курсор стоял в головке слайдера)
         length = max(obj.length, 1.0)
         slides = max(obj.slides, 1)
         t_end_wall = t_wall + (obj.end_time - obj.time) / 1000.0 if obj.end_time else t_wall + 0.5
@@ -119,13 +151,13 @@ class MapPlayer:
         idrv.move_absolute(sx0, sy0)
         while time.perf_counter() < t_wall:
             pass
-        idrv.key_down(VK_Z)  # держим кнопку на всё тело слайдера
+        idrv.hold_start(VK_Z)  # держим кнопку на всё тело слайдера (защита от релизера)
 
         while True:
             now = time.perf_counter()
             if now >= t_end_wall:
                 break
-            progress = (now - t_wall) * velocity          # пройденный путь, px
+            progress = (now - t_wall) * velocity_sec      # пройденный путь, px
             cycles = int(progress // length)
             d = progress - cycles * length
             if cycles % 2 == 1:
@@ -134,13 +166,17 @@ class MapPlayer:
             sx, sy = idrv.osu_to_screen(x, y)
             idrv.move_absolute(sx, sy)
             time.sleep(0.004)
-        idrv.key_up(VK_Z)
+        idrv.hold_end(VK_Z)
 
     def _spin(self, obj: HitObject, t_wall: float) -> None:
         t_end_wall = t_wall + (obj.end_time - obj.time) / 1000.0 if obj.end_time else t_wall + 1.0
         cx, cy = idrv.osu_to_screen(obj.x, obj.y)
         radius = 120  # экранных пикселей
         period = 0.2  # 5 оборотов в секунду
+        idrv.move_absolute(cx + radius, cy)
+        while time.perf_counter() < t_wall:
+            pass
+        idrv.hold_start(VK_Z)  # вращение с зажатой кнопкой
         while True:
             now = time.perf_counter()
             if now >= t_end_wall:
@@ -148,6 +184,7 @@ class MapPlayer:
             ang = 2 * math.pi * (now - t_wall) / period
             idrv.move_absolute(int(cx + radius * math.cos(ang)), int(cy + radius * math.sin(ang)))
             time.sleep(0.004)
+        idrv.hold_end(VK_Z)
         idrv.move_absolute(cx, cy)
 
     # ---- основной цикл ----
@@ -185,6 +222,6 @@ class MapPlayer:
                 print('  ... круги %d, слайдеры %d, спиннеры %d' %
                       (stats['circles'], stats['sliders'], stats['spinners']))
 
-            # перекалибровка привязки между объектами (не чаще, чем раз в 10 с)
-            self.maybe_relocate()
+            # применяем готовый фоновый замер (не блокирует цикл)
+            self.apply_relocation()
         return stats
