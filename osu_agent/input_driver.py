@@ -41,6 +41,41 @@ kernel32 = ctypes.windll.kernel32
 # что полностью нивелирует микросекундное планирование ударов.
 ctypes.windll.winmm.timeBeginPeriod(1)
 
+# Приоритеты: при обычном приоритете планировщик Windows даёт выбросы до 15+ мс
+# (проверка дня 2). Высокий приоритет процесса и критический приоритет главного
+# потока убирают конкуренцию за квант с фоновыми задачами.
+HIGH_PRIORITY_CLASS = 0x00000080
+THREAD_PRIORITY_TIME_CRITICAL = 15
+
+
+def boost_priority() -> bool:
+    """Поднять приоритет процесса и текущего потока (идемпотентно)."""
+    try:
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), HIGH_PRIORITY_CLASS)
+        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)
+        return True
+    except Exception:
+        return False
+
+
+def set_cpu_affinity(index: int | None) -> bool:
+    """Привязать текущий поток к логическому ядру (убирает миграции между ядрами).
+
+    Особенно полезно на гибридных CPU (P/E-ядра): миграция в момент удара даёт
+    выбросы в единицы миллисекунд, которых на OD6 (окно 300 = ±22 мс) хватает
+    для потери 300.
+    """
+    if index is None:
+        return False
+    try:
+        mask = 1 << int(index)
+        return bool(kernel32.SetThreadAffinityMask(kernel32.GetCurrentThread(), mask))
+    except Exception:
+        return False
+
+
+boost_priority()
+
 # --- SendInput ---
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -133,11 +168,53 @@ def click(x: int | None = None, y: int | None = None, button: str = "left", sett
         time.sleep(0.012)
 
 
+VK_Z = 0x5A
+VK_X = 0x58
+VK_CTRL = 0x11
+VK_A = 0x41
+
+# --- учёт фактически нажатых клавиш ---
+# KeyUp уходит асинхронно (поток-релизер), поэтому «мы только что тапнули Z» не
+# значит «Z уже отпущена». Повторный KeyDown по ещё нажатой клавише игра не
+# увидит — удар/голова слайдера пропустятся. Держим фактическое состояние.
+_pressed_keys: set[int] = set()
+_pressed_lock = threading.Lock()
+
+
+def _mark_pressed(vk: int) -> None:
+    with _pressed_lock:
+        _pressed_keys.add(vk)
+
+
+def _mark_released(vk: int) -> None:
+    with _pressed_lock:
+        _pressed_keys.discard(vk)
+
+
+def key_is_active(vk: int) -> bool:
+    """Нажат ли сейчас `vk` (KeyDown отправлен, KeyUp ещё нет)."""
+    with _pressed_lock:
+        return vk in _pressed_keys
+
+
+def free_key(candidates: tuple[int, ...] = (VK_Z, VK_X), wait: float = 0.06) -> int:
+    """Первая свободная клавиша из `candidates` (коротко ждёт, если все заняты)."""
+    deadline = time.perf_counter() + wait
+    while True:
+        for vk in candidates:
+            if not key_is_active(vk):
+                return vk
+        if time.perf_counter() >= deadline:
+            return candidates[0]
+        time.sleep(0.002)
+
+
 def key_down(vk: int) -> None:
     """Нажать клавишу (событие KeyDown — именно его судит игра)."""
     inp = INPUT(type=INPUT_KEYBOARD)
     inp.union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None)
     _send(inp)
+    _mark_pressed(vk)
 
 
 def key_up(vk: int) -> None:
@@ -145,6 +222,7 @@ def key_up(vk: int) -> None:
     inp = INPUT(type=INPUT_KEYBOARD)
     inp.union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)
     _send(inp)
+    _mark_released(vk)
 
 
 TAP_HOLD_MS = 25
@@ -207,11 +285,13 @@ def release_all() -> None:
             _release_queue.get_nowait()
         except queue.Empty:
             break
-    for vk in (0x5A, 0x58):  # Z, X
+    for vk in (VK_Z, VK_X):
         try:
             key_up(vk)
         except OSError:
             pass
+    with _pressed_lock:
+        _pressed_keys.clear()
 
 
 def tap(vk: int, hold_ms: float = TAP_HOLD_MS) -> None:
@@ -221,17 +301,21 @@ def tap(vk: int, hold_ms: float = TAP_HOLD_MS) -> None:
     _release_queue.put((time.perf_counter() + hold_ms / 1000.0, vk))
 
 
-_next_tap_vk = 0x5A  # начинаем с Z
+_next_tap_vk = VK_Z  # начинаем с Z
 
 
 def tap_alternate(hold_ms: float = TAP_HOLD_MS) -> int:
     """Тап с чередованием Z ↔ X (для стримов одной рукой невозможно, нужны обе).
 
+    Клавиша, которая ещё не отпущена релизером, не используется: повторный
+    KeyDown по нажатой клавише игра игнорирует (удар пропал бы).
     Возвращает использованную клавишу.
     """
     global _next_tap_vk
-    vk = _next_tap_vk
-    _next_tap_vk = 0x58 if vk == 0x5A else 0x5A
+    preferred = _next_tap_vk
+    other = VK_X if preferred == VK_Z else VK_Z
+    vk = free_key((preferred, other))
+    _next_tap_vk = other if vk == preferred else preferred
     tap(vk, hold_ms)
     return vk
 

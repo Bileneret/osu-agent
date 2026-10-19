@@ -53,6 +53,34 @@ class MapPlayer:
         self.t_anchor = t_onset
         return t_onset
 
+    def needs_predicted_start(self, threshold_sec: float = 1.5) -> bool:
+        """Нужен ли предсказанный старт для первой ноты карты.
+
+        Тап по первой ноте происходит в T0 + (t_first − S), а первый звук трека
+        детектируется не раньше T0 + ref_onset + ~0.1 с. Если первая нота позже
+        этого окна (по умолчанию — от 1.5 с), карта стартует напрямую по онсету,
+        без калибровки Δ. Предсказание нужно только для карт с очень ранней
+        первой нотой (как pearto's Easy: 140 мс при первом звуке 115 мс).
+        """
+        first_sec = min(o.time for o in self.bm.hit_objects) / 1000.0
+        return first_sec < threshold_sec
+
+    def wait_for_onset_anchor(self, t_click: float, earliest_margin: float = 0.55,
+                              timeout: float = 15.0) -> float | None:
+        """Прямой старт: дождаться фактического первого звука и привязаться к нему.
+
+        `earliest_margin` — минимальная задержка после клика запуска: раньше этого
+        момента онсетов быть не может (звук клика по кнопке идёт ~0.13–0.43 с).
+        """
+        self.rec.start()
+        t_onset = self.rec.wait_for_onset(timeout=timeout, poll=0.02,
+                                          earliest=t_click + earliest_margin)
+        if t_onset is None:
+            return None
+        self.t_end_pos = self.ref_onset
+        self.t_anchor = t_onset
+        return t_onset
+
     def predicted_start(self, t_click: float, delta: float) -> float:
         """Привязка по ПРЕДСКАЗАНИЮ старта: t_onset = t_click + delta + ref_onset.
 
@@ -69,23 +97,26 @@ class MapPlayer:
 
     def start_onset_watcher(self, not_before: float | None = None,
                             timeout: float = 10.0, poll: float = 0.02,
-                            t0: float | None = None) -> None:
+                            t0: float | None = None,
+                            earliest: float | None = None) -> None:
         """Фоновый поток: поймать фактический онсет и уточнить предсказание.
 
-        `not_before` (perf_counter) отсекает ложные срабатывания на звуках клика
-        по кнопке паузы: до этого момента слушать не начинаем. `t0` — метка клика
-        запуска (для журнала).
+        `earliest` (perf_counter) — фильтр кандидатов: всё раньше этого момента
+        отбрасывается (звук клика по кнопке паузы). `not_before` — с какого
+        момента начинать слушать (обычно = earliest). `t0` — метка клика для журнала.
         """
         import threading
         self._onset_lock = threading.Lock()
         self._onset_actual = None
         self.rec.start()
+        if earliest is None:
+            earliest = not_before
 
         def loop():
             wait = 0.0 if not_before is None else not_before - time.perf_counter()
             if wait > 0:
                 time.sleep(wait)
-            t = self.rec.wait_for_onset(timeout=timeout, poll=poll, earliest=not_before)
+            t = self.rec.wait_for_onset(timeout=timeout, poll=poll, earliest=earliest)
             with self._onset_lock:
                 self._onset_actual = t
             if t is None:
@@ -219,9 +250,32 @@ class MapPlayer:
         while time.perf_counter() < t_wall:
             pass
 
+    @staticmethod
+    def move_lead_sec(distance_px: float, speed_px_ms: float = 2.5,
+                      min_lead: float = 0.030, max_lead: float = 0.250) -> float:
+        """Сколько времени заложить на «перелёт» курсора к объекту (сек).
+
+        Движение мыши не мгновенно с точки зрения игры: позиция обрабатывается
+        input-потоком, и если переместить курсор вплотную к моменту удара, игра
+        может судить удар по старой позиции. Считаем оценку time = путь / скорость
+        и начинаем движение за это время до удара.
+        """
+        lead = distance_px / (speed_px_ms * 1000.0)
+        return min(max(lead, min_lead), max_lead)
+
+    def _move_with_lead(self, sx: int, sy: int, t_wall: float) -> None:
+        """Подвести курсор к (sx, sy) с упреждением по времени перелёта."""
+        cx, cy = idrv.cursor_pos()
+        lead = self.move_lead_sec(math.hypot(sx - cx, sy - cy))
+        t_move = t_wall - lead
+        now = time.perf_counter()
+        if now < t_move:
+            time.sleep(t_move - now)
+        idrv.move_absolute(sx, sy)
+
     def _tap_circle(self, obj: HitObject, t_wall: float) -> None:
         sx, sy = idrv.osu_to_screen(obj.x, obj.y)
-        idrv.move_absolute(sx, sy)
+        self._move_with_lead(sx, sy, t_wall)
         self._wait_until(t_wall)
         idrv.tap_alternate()
 
@@ -241,9 +295,11 @@ class MapPlayer:
         t_end_wall = t_wall + (obj.end_time - obj.time) / 1000.0 if obj.end_time else t_wall + 0.5
 
         sx0, sy0 = idrv.osu_to_screen(obj.x, obj.y)
-        idrv.move_absolute(sx0, sy0)
+        self._move_with_lead(sx0, sy0, t_wall)
         self._wait_until(t_wall)
-        idrv.hold_start(VK_Z)  # держим кнопку на всё тело слайдера (защита от релизера)
+        # клавиша, которая точно свободна: KeyUp предыдущего тапа может ещё идти
+        vk = idrv.free_key((VK_Z, VK_X))
+        idrv.hold_start(vk)  # держим кнопку на всё тело слайдера (защита от релизера)
 
         while True:
             now = time.perf_counter()
@@ -262,16 +318,17 @@ class MapPlayer:
         x, y = point_at_distance(path, length)
         idrv.move_absolute(*idrv.osu_to_screen(x, y))
         time.sleep(0.015)
-        idrv.hold_end(VK_Z)
+        idrv.hold_end(vk)
 
     def _spin(self, obj: HitObject, t_wall: float) -> None:
         t_end_wall = t_wall + (obj.end_time - obj.time) / 1000.0 if obj.end_time else t_wall + 1.0
         cx, cy = idrv.osu_to_screen(obj.x, obj.y)
         radius = 80    # экранных пикселей
         period = 0.135  # ~444 RPM: за 4.8 с спиннера даёт ~35 оборотов (нужно 24)
-        idrv.move_absolute(cx + radius, cy)
+        self._move_with_lead(cx + radius, cy, t_wall)
         self._wait_until(t_wall)
-        idrv.hold_start(VK_Z)  # вращение с зажатой кнопкой
+        vk = idrv.free_key((VK_Z, VK_X))
+        idrv.hold_start(vk)  # вращение с зажатой кнопкой
         while True:
             now = time.perf_counter()
             if now >= t_end_wall:
@@ -279,7 +336,7 @@ class MapPlayer:
             ang = 2 * math.pi * (now - t_wall) / period
             idrv.move_absolute(int(cx + radius * math.cos(ang)), int(cy + radius * math.sin(ang)))
             time.sleep(0.003)
-        idrv.hold_end(VK_Z)
+        idrv.hold_end(vk)
         idrv.move_absolute(cx, cy)
 
     # ---- основной цикл ----
@@ -300,11 +357,7 @@ class MapPlayer:
                 stats['skipped'] += 1
                 continue
 
-            # подводим курсор заранее для круга/слайдера
-            if obj.kind in ('circle',):
-                sx, sy = idrv.osu_to_screen(obj.x, obj.y)
-                idrv.move_absolute(sx, sy)
-
+            # курсор подводится с упреждением внутри обработчиков (_move_with_lead)
             if obj.kind == 'circle':
                 self._tap_circle(obj, t_wall)
                 stats['circles'] += 1
