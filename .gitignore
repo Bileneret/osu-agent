@@ -12,6 +12,9 @@ beatmaps/
 session_*.md
 _*
 
+# рабочие кадры спайка (тяжёлые; ключевые доказательства — в docs/evidence/)
+spike/shots/
+
 # временное
 *.tmp
 *.log
