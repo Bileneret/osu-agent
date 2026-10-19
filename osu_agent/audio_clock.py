@@ -80,6 +80,9 @@ class BackgroundRecorder:
         self._mic = None
 
     def start(self) -> "BackgroundRecorder":
+        """Запустить фоновую запись (повторный вызов безопасен — no-op)."""
+        if self._thread is not None and self._thread.is_alive():
+            return self
         import soundcard as sc
 
         self._mic = sc.get_microphone(self.device_name, include_loopback=True)
@@ -121,13 +124,10 @@ class BackgroundRecorder:
                 break
         parts.reverse()
         audio = np.concatenate([a for _, a in parts])
+        # Конец последнего блока = конец (обрезанного) сигнала: берём последние
+        # need сэмплов, их конец совпадает с концом всего накопленного сигнала.
         t_end = parts[-1][0]
-        tail_len = len(parts[-1][1])
-        # время, соответствующее концу обрезанного сигнала:
-        # от конца последнего блока отступаем на длину отброшенного хвоста
-        dropped = (len(audio) - need) if len(audio) > need else 0
-        t_cut = t_end - dropped / self.sr
-        return audio[-need:], t_cut
+        return audio[-need:], t_end
 
     def locate(self, ref: np.ndarray, seconds: float = 3.0):
         """Позиция трека по последним `seconds` секундам: (позиция_конца, score, t_end)."""
