@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,89 @@ def record_loopback(device_name: str, seconds: float, sr: int = SR) -> np.ndarra
     if arr.ndim > 1:
         arr = arr.mean(axis=1)
     return arr
+
+
+class BackgroundRecorder:
+    """Непрерывный фоновый захват loopback (кольцевой буфер блоков).
+
+    Решает проблему «слепого старта»: блокирующая запись 4 секунд в начале карты
+    приводила к пропуску первых нот. Здесь поток пишет звук постоянно, а позиция
+    трека берётся в любой момент без остановки планировщика.
+    """
+
+    def __init__(self, device_name: str, sr: int = SR, block_sec: float = 0.5, keep_sec: float = 8.0):
+        self.device_name = device_name
+        self.sr = sr
+        self.block = int(sr * block_sec)
+        self.keep = int(sr * keep_sec)
+        self._blocks: list[tuple[float, np.ndarray]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._mic = None
+
+    def start(self) -> "BackgroundRecorder":
+        import soundcard as sc
+
+        self._mic = sc.get_microphone(self.device_name, include_loopback=True)
+        self._thread = threading.Thread(target=self._run, daemon=True, name="loopback-recorder")
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                data = self._mic.record(samplerate=self.sr, numframes=self.block)
+            except Exception:
+                time.sleep(0.1)
+                continue
+            arr = np.asarray(data, dtype=np.float32)
+            if arr.ndim > 1:
+                arr = arr.mean(axis=1)
+            t_end = time.perf_counter()
+            with self._lock:
+                self._blocks.append((t_end, arr))
+                total = sum(len(b) for _, b in self._blocks)
+                while total > self.keep and len(self._blocks) > 1:
+                    total -= len(self._blocks[0][1])
+                    self._blocks.pop(0)
+
+    def recent(self, seconds: float) -> tuple[np.ndarray | None, float | None]:
+        """Последние `seconds` секунд записи и время конца этого сигнала (perf_counter)."""
+        with self._lock:
+            blocks = list(self._blocks)
+        if not blocks:
+            return None, None
+        need = int(self.sr * seconds)
+        parts: list[tuple[float, np.ndarray]] = []
+        total = 0
+        for t_end, arr in reversed(blocks):
+            parts.append((t_end, arr))
+            total += len(arr)
+            if total >= need:
+                break
+        parts.reverse()
+        audio = np.concatenate([a for _, a in parts])
+        t_end = parts[-1][0]
+        tail_len = len(parts[-1][1])
+        # время, соответствующее концу обрезанного сигнала:
+        # от конца последнего блока отступаем на длину отброшенного хвоста
+        dropped = (len(audio) - need) if len(audio) > need else 0
+        t_cut = t_end - dropped / self.sr
+        return audio[-need:], t_cut
+
+    def locate(self, ref: np.ndarray, seconds: float = 3.0):
+        """Позиция трека по последним `seconds` секундам: (позиция_конца, score, t_end)."""
+        audio, t_end = self.recent(seconds)
+        if audio is None or len(audio) < self.sr // 2:
+            return None
+        pos, score = find_offset(ref, audio, self.sr)
+        return pos, score, t_end
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
 
 
 def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:

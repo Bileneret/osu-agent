@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import math
+import queue
 import sys
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -146,16 +149,73 @@ def key_up(vk: int) -> None:
 
 TAP_HOLD_MS = 25
 
+# --- неблокирующее отпускание клавиш ---
+# tap() не спит: KeyDown уходит немедленно, а KeyUp ставится в очередь и
+# отпускается отдельным потоком-релизером. На стримах (интервал 62–75 мс)
+# синхронный sleep(25 мс) парализовал бы планировщик и движение курсора.
+_release_queue: "queue.PriorityQueue[tuple[float, int]]" = queue.PriorityQueue()
+_release_thread: threading.Thread | None = None
+_release_lock = threading.Lock()
+
+
+def _ensure_releaser() -> None:
+    global _release_thread
+    with _release_lock:
+        if _release_thread is None or not _release_thread.is_alive():
+            _release_thread = threading.Thread(target=_release_worker, daemon=True, name="key-releaser")
+            _release_thread.start()
+
+
+def _release_worker() -> None:
+    while True:
+        when, vk = _release_queue.get()
+        now = time.perf_counter()
+        if when > now:
+            time.sleep(when - now)
+        try:
+            key_up(vk)
+        except OSError:
+            pass
+
+
+def release_all() -> None:
+    """Отпустить все запланированные клавиши немедленно (аварийный сброс)."""
+    while not _release_queue.empty():
+        try:
+            _release_queue.get_nowait()
+        except queue.Empty:
+            break
+    for vk in (0x5A, 0x58):  # Z, X
+        try:
+            key_up(vk)
+        except OSError:
+            pass
+
 
 def tap(vk: int, hold_ms: float = TAP_HOLD_MS) -> None:
-    """Тап: KeyDown немедленно, KeyUp через hold_ms. Время тапа = момент KeyDown."""
+    """Тап без блокировки: KeyDown сейчас, KeyUp — через hold_ms (в фоне)."""
+    _ensure_releaser()
     key_down(vk)
-    time.sleep(hold_ms / 1000.0)
-    key_up(vk)
+    _release_queue.put((time.perf_counter() + hold_ms / 1000.0, vk))
+
+
+_next_tap_vk = 0x5A  # начинаем с Z
+
+
+def tap_alternate(hold_ms: float = TAP_HOLD_MS) -> int:
+    """Тап с чередованием Z ↔ X (для стримов одной рукой невозможно, нужны обе).
+
+    Возвращает использованную клавишу.
+    """
+    global _next_tap_vk
+    vk = _next_tap_vk
+    _next_tap_vk = 0x58 if vk == 0x5A else 0x5A
+    tap(vk, hold_ms)
+    return vk
 
 
 def key(vk: int) -> None:
-    """Совместимость: тап клавишей (KeyDown + KeyUp)."""
+    """Совместимость: тап клавишей (KeyDown + KeyUp в фоне)."""
     tap(vk)
 
 
