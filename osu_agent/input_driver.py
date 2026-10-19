@@ -34,6 +34,10 @@ except Exception:
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# Точный системный таймер: без него квант планировщика Windows — 15.6 мс,
+# что полностью нивелирует микросекундное планирование ударов.
+ctypes.windll.winmm.timeBeginPeriod(1)
+
 # --- SendInput ---
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -126,13 +130,33 @@ def click(x: int | None = None, y: int | None = None, button: str = "left", sett
         time.sleep(0.012)
 
 
+def key_down(vk: int) -> None:
+    """Нажать клавишу (событие KeyDown — именно его судит игра)."""
+    inp = INPUT(type=INPUT_KEYBOARD)
+    inp.union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None)
+    _send(inp)
+
+
+def key_up(vk: int) -> None:
+    """Отпустить клавишу."""
+    inp = INPUT(type=INPUT_KEYBOARD)
+    inp.union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)
+    _send(inp)
+
+
+TAP_HOLD_MS = 25
+
+
+def tap(vk: int, hold_ms: float = TAP_HOLD_MS) -> None:
+    """Тап: KeyDown немедленно, KeyUp через hold_ms. Время тапа = момент KeyDown."""
+    key_down(vk)
+    time.sleep(hold_ms / 1000.0)
+    key_up(vk)
+
+
 def key(vk: int) -> None:
-    """Нажатие и отпускание клавиши по VK-коду."""
-    for flags in (0, KEYEVENTF_KEYUP):
-        inp = INPUT(type=INPUT_KEYBOARD)
-        inp.union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=None)
-        _send(inp)
-        time.sleep(0.012)
+    """Совместимость: тап клавишей (KeyDown + KeyUp)."""
+    tap(vk)
 
 
 def type_text(text: str) -> None:
@@ -180,6 +204,35 @@ def cursor_pos() -> tuple[int, int]:
     pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
+
+
+# --- перевод координат osu!-поля (512×384) в экранные пиксели ---
+# Источник истины — код lazer: osu.Game.Rulesets.Osu/UI/OsuPlayfieldAdjustmentContainer.cs
+#   playfield_size_adjust = 0.8  (поле занимает 80% от логического игрового пространства)
+#   логическое пространство 1024×768 вписывается в экран с сохранением аспекта (fit)
+#   PlayfieldShift сдвигает поле вниз на 8 osu-единиц
+# При 1920×1080: scale = 2.25, offset = (384, 126). (Проверено измерением по скриншотам.)
+OSU_BASE = (512.0, 384.0)
+LOGICAL_GAME = (1024.0, 768.0)
+PLAYFIELD_SIZE_ADJUST = 0.8
+PLAYFIELD_SHIFT_OSU = 8.0
+
+
+def playfield_transform(screen_w: int | None = None, screen_h: int | None = None):
+    """Вернуть (scale, offset_x, offset_y) для перевода osu!-координат в пиксели."""
+    if screen_w is None or screen_h is None:
+        _, _, screen_w, screen_h = virtual_screen()
+    fit = min(screen_w / LOGICAL_GAME[0], screen_h / LOGICAL_GAME[1])
+    scale = PLAYFIELD_SIZE_ADJUST * fit * LOGICAL_GAME[1] / OSU_BASE[1]  # = 1.6 * fit
+    offset_x = (screen_w - OSU_BASE[0] * scale) / 2.0
+    offset_y = (screen_h - OSU_BASE[1] * scale) / 2.0 + PLAYFIELD_SHIFT_OSU * scale
+    return scale, offset_x, offset_y
+
+
+def osu_to_screen(x: float, y: float) -> tuple[int, int]:
+    """Перевести координаты ноты из `.osu` (0..512, 0..384) в экранные пиксели."""
+    scale, ox, oy = playfield_transform()
+    return int(round(ox + x * scale)), int(round(oy + y * scale))
 
 
 # --- окно игры ---

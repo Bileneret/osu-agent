@@ -32,7 +32,7 @@ def white(img):
 
 
 def to_screen(x, y):
-    return int(240 + x * 2.8125), int(y * 2.8125)
+    return idrv.osu_to_screen(x, y)
 
 
 hwnd = idrv.find_window()
