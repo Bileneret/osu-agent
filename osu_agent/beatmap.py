@@ -36,9 +36,13 @@ class TimingPoint:
         return 60000.0 / self.beat_length
 
 
-@dataclass(frozen=True)
+@dataclass
 class HitObject:
-    """Один игровой объект карты."""
+    """Один игровой объект карты.
+
+    `end_time` для слайдеров вычисляется в `Beatmap.compute_slider_geometry()`
+    (с учётом SliderMultiplier и SV из зелёных линий тайминга).
+    """
 
     kind: str  # "circle" | "slider" | "spinner" | "hold"
     x: float
@@ -122,6 +126,58 @@ class Beatmap:
             result[obj.kind] = result.get(obj.kind, 0) + 1
         return result
 
+    # ---- слайдеры: скорость и длительность ----
+
+    @property
+    def slider_multiplier(self) -> float:
+        value = self.difficulty.get("SliderMultiplier", 1.4)
+        return float(value) if isinstance(value, (int, float)) else 1.4
+
+    def beat_length_at(self, time_ms: float) -> float | None:
+        """Длительность бита (мс) по ближайшей красной линии тайминга."""
+        reds = [tp for tp in self.timing_points if tp.uninherited and tp.time <= time_ms]
+        if reds:
+            return reds[-1].beat_length
+        reds = [tp for tp in self.timing_points if tp.uninherited]
+        return reds[0].beat_length if reds else None
+
+    def sv_at(self, time_ms: float) -> float:
+        """Множитель скорости слайдера (SV) по зелёным линиям (1.0 — по умолчанию)."""
+        greens = [tp for tp in self.timing_points if not tp.uninherited and tp.time <= time_ms]
+        if not greens:
+            return 1.0
+        beat_length = greens[-1].beat_length
+        if beat_length < 0:
+            return -100.0 / beat_length
+        return 1.0
+
+    def slider_velocity(self, time_ms: float) -> float | None:
+        """Скорость слайдера в osu!-пикселях на миллисекунду (с учётом SV)."""
+        beat_length = self.beat_length_at(time_ms)
+        if not beat_length or beat_length <= 0:
+            return None
+        return (100.0 * self.slider_multiplier * self.sv_at(time_ms)) / beat_length
+
+    def compute_slider_geometry(self) -> None:
+        """Заполнить `end_time` у слайдеров (длина × слайды / скорость)."""
+        for obj in self.hit_objects:
+            if obj.kind != "slider" or obj.end_time is not None:
+                continue
+            velocity = self.slider_velocity(obj.time)
+            if not velocity or velocity <= 0:
+                continue
+            slides = max(obj.slides, 1)
+            obj.end_time = obj.time + obj.length * slides / velocity
+
+    def slider_path(self, obj: HitObject):
+        """Путь слайдера (массив точек в osu!-координатах) — по требованию."""
+        from .slider_path import build_path
+
+        if obj.kind != "slider":
+            return None
+        points = [(obj.x, obj.y), *obj.curve_points]
+        return build_path(obj.curve_type, points, obj.length)
+
     @property
     def last_object_time(self) -> float:
         """Время последнего события карты (учитывая концы слайдеров/спиннеров)."""
@@ -157,6 +213,7 @@ class Beatmap:
             parser = _SECTION_PARSERS.get(section)
             if parser is not None:
                 parser(bm, line)
+        bm.compute_slider_geometry()
         return bm
 
 
