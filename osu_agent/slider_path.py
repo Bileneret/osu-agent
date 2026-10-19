@@ -62,11 +62,74 @@ def _catmull_rom(points: np.ndarray, steps_per_seg: int) -> np.ndarray:
     return np.vstack(out)
 
 
+def _circle_arc(a: np.ndarray, b: np.ndarray, c: np.ndarray, expected_length: float,
+                samples_per_10px: float = 2.0) -> np.ndarray | None:
+    """Дуга описанной окружности через три точки (истинная геометрия Perfect Curve).
+
+    Возвращает массив точек или None, если точки коллинеарны (тогда — прямая).
+    """
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    cx, cy = float(c[0]), float(c[1])
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-9:
+        return None
+    a2 = ax * ax + ay * ay
+    b2 = bx * bx + by * by
+    c2 = cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    r = math.hypot(ax - ux, ay - uy)
+    if r < 1e-6:
+        return None
+
+    theta_a = math.atan2(ay - uy, ax - ux)
+    theta_b = math.atan2(by - uy, bx - ux)
+    theta_c = math.atan2(cy - uy, cx - ux)
+
+    def norm(x: float) -> float:
+        while x < 0:
+            x += 2 * math.pi
+        while x >= 2 * math.pi:
+            x -= 2 * math.pi
+        return x
+
+    # выбираем направление обхода, проходящее через B
+    ccw_span = norm(theta_c - theta_a)
+    ccw_b = norm(theta_b - theta_a)
+    if ccw_b <= ccw_span:
+        span = ccw_span
+        direction = 1.0
+    else:
+        span = ccw_span - 2 * math.pi  # отрицательное — по часовой
+        direction = -1.0
+
+    arc_len = abs(span) * r
+    steps = max(6, int(arc_len / 10.0 * samples_per_10px))
+    angles = theta_a + (span if direction > 0 else span) * np.linspace(0.0, 1.0, steps)
+    return np.stack([ux + r * np.cos(angles), uy + r * np.sin(angles)], axis=1)
+
+
+def _perfect_curve(points: np.ndarray, expected_length: float,
+                   samples_per_10px: float = 2.0) -> np.ndarray:
+    """Perfect Curve: 3 точки — дуга описанной окружности (истинная геометрия lazer).
+
+    Для >3 точек (редкость) — аппроксимация Безье: в lazer PerfectCurve строится
+    как последовательность дуг/прямых, здесь этим случаем пренебрегаем.
+    """
+    if len(points) == 3:
+        arc = _circle_arc(points[0], points[1], points[2], expected_length, samples_per_10px)
+        if arc is not None and len(arc) > 1:
+            return arc
+        return np.linspace(points[0], points[-1], max(2, int(expected_length / 5.0) + 1))
+    return _bezier(points, max(2, int(expected_length / 5.0)))
+
+
 def build_path(curve_type: str | None, points: list[Point], expected_length: float,
                samples_per_10px: float = 2.0) -> np.ndarray:
     """Построить путь слайдера: массив точек (N×2) от головы до хвоста.
 
-    `expected_length` — длина из `.osu` (в osu!-пикселях); путь обрезается/дополняется
+    `expected_length` — длина из `.osu` (в osu!-пикселях); путь обрезается
     до неё, как это делает игра.
     """
     pts = [tuple(map(float, p)) for p in points]
@@ -82,8 +145,9 @@ def build_path(curve_type: str | None, points: list[Point], expected_length: flo
         path = np.vstack(segments)
     elif ct == 'C':
         path = _catmull_rom(all_pts, max(8, int(expected_length / 5.0)))
-    else:  # 'B' (Безье) и 'P' (аппроксимация)
-        # Безье-сегменты: разбиваем по повторяющимся точкам
+    elif ct == 'P':
+        path = _perfect_curve(all_pts, expected_length, samples_per_10px)
+    else:  # 'B' — Безье (сегменты разделяются повторяющимися точками)
         segments: list[np.ndarray] = []
         start = 0
         for i in range(1, len(all_pts)):

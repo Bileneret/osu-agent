@@ -76,11 +76,16 @@ else:
     player.stop()
     sys.exit(2)
 
-time.sleep(1.5)  # музыка пошла
-
-pos, score = player.calibrate_position()
-print('локация: позиция %.3f c | score=%.3f' % (player.t_end_pos, score))
-player.start_relocator()  # перекалибровка в фоне, без блокировки геймплея
+# мгновенный якорь: ждём появления первого звука карты (без БПФ-задержки)
+t_onset = player.wait_for_music_start(timeout=40.0)
+if t_onset is None:
+    print('онсет не пойман — резервная калибровка по локации')
+    time.sleep(1.0)
+    pos, score = player.calibrate_position()
+    print('локация: позиция %.3f c | score=%.3f' % (player.t_end_pos, score))
+else:
+    print('якорь по онсету: ref_onset=%.3f c (первый звук трека)' % player.ref_onset)
+player.start_relocator()  # уточняющая перекалибровка в фоне
 
 stats = player.play(verbose=True)
 print('исполнено:', stats)

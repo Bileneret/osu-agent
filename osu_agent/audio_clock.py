@@ -60,6 +60,16 @@ def record_loopback(device_name: str, seconds: float, sr: int = SR) -> np.ndarra
     return arr
 
 
+def first_sound_time(ref: np.ndarray, sr: int = SR, threshold: float = 0.02,
+                     win_ms: float = 5.0) -> float:
+    """Время (сек) первого звука в эталонном треке (для мгновенного якоря старта)."""
+    win = max(1, int(sr * win_ms / 1000.0))
+    for i in range(0, max(1, len(ref) - win), win):
+        if float(np.sqrt(np.mean(ref[i:i + win] ** 2))) > threshold:
+            return i / sr
+    return 0.0
+
+
 class BackgroundRecorder:
     """Непрерывный фоновый захват loopback (кольцевой буфер блоков).
 
@@ -139,6 +149,47 @@ class BackgroundRecorder:
             return None
         pos, score = find_offset(ref, audio, self.sr, hint=hint)
         return pos, score, t_end
+
+    def wait_for_onset(self, threshold: float = 0.02, silence: float = 0.3,
+                       timeout: float = 40.0, poll: float = 0.05,
+                       earliest: float | None = None):
+        """Ждать старт музыки карты: ≥`silence` секунд тишины, затем скачок громкости.
+
+        Возвращает perf_counter-время первого громкого сэмпла (или None по таймауту).
+        Точность — сэмпл внутри блока (буферизация вывода учтена общей поправкой S).
+
+        `earliest` (perf_counter) отсекает ложные срабатывания на звуках интерфейса
+        (клик по кнопке паузы): кандидаты раньше этого момента игнорируются, поиск
+        продолжается со следующего скачка после тишины.
+        """
+        deadline = time.perf_counter() + timeout
+        need = max(1, int(silence / 0.02))
+        while time.perf_counter() < deadline:
+            audio, t_end = self.recent(2.0)
+            if audio is not None and len(audio) > int(self.sr * (silence + 0.1)):
+                win = int(self.sr * 0.02)
+                silent_run = 0
+                onset_idx = None
+                for i in range(0, len(audio) - win + 1, win):
+                    seg = audio[i:i + win]
+                    rms = float(np.sqrt(np.mean(seg ** 2)))
+                    if rms > threshold:
+                        if silent_run >= need:
+                            over = np.abs(seg) > threshold
+                            cand = i + int(np.argmax(over))
+                            t_cand = t_end - (len(audio) - cand) / self.sr
+                            if earliest is not None and t_cand < earliest:
+                                silent_run = 0   # это не цель: ждём следующий скачок
+                                continue
+                            onset_idx = cand
+                            break
+                        silent_run = 0
+                    elif rms < threshold * 0.25:
+                        silent_run += 1
+                if onset_idx is not None:
+                    return t_end - (len(audio) - onset_idx) / self.sr
+            time.sleep(poll)
+        return None
 
     def stop(self) -> None:
         self._stop.set()
