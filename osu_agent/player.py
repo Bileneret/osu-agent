@@ -20,6 +20,12 @@ from .slider_path import build_path, point_at_distance
 VK_Z = 0x5A
 VK_X = 0x58
 
+DEFAULT_TAP_HOLD_MS = 25.0   # обычное удержание клавиши на тапе
+DENSE_TAP_HOLD_MS = 18.0     # плотные стримы: короче, чтобы клавиша успела «сброситься»
+DENSE_LEAD_SPEED = 6.0       # px/мс: оценка перелёта на плотных картах
+DENSE_TAIL_HOLD = 0.005      # удержание хвоста слайдера на плотных картах
+DEFAULT_TAIL_HOLD = 0.015    # обычное удержание хвоста слайдера
+
 
 class MapPlayer:
     """Играет карту: планирует удары по таймлайну `.osu` и исполняет их."""
@@ -36,6 +42,12 @@ class MapPlayer:
         self.t_anchor: float | None = None    # perf_counter
         self.ref_onset: float = first_sound_time(ref_audio)  # время первого звука трека
         self._send_errs: list[float] = []     # телеметрия: задержка отправки удара
+        # кинематика (уточняется auto_tune по плотности карты)
+        self.dense: bool = False
+        self.min_gap_ms: float | None = None
+        self.lead_speed_px_ms: float = 2.5
+        self.tap_hold_ms: float = DEFAULT_TAP_HOLD_MS
+        self.tail_hold_sec: float = DEFAULT_TAIL_HOLD
 
     # ---- синхронизация ----
 
@@ -82,7 +94,7 @@ class MapPlayer:
         self.t_anchor = t_onset
         return t_onset
 
-    def wait_for_position_anchor(self, timeout: float = 20.0, min_score: float = 0.35,
+    def wait_for_position_anchor(self, timeout: float = 25.0, min_score: float = 0.22,
                                  hint: float = 0.0):
         """Прямой старт по КОРРЕЛЯЦИИ: якорь — начало трека, найденное по форме сигнала.
 
@@ -90,29 +102,144 @@ class MapPlayer:
         первый звук тише фонового уровня. Первые `timeout/2` ищем в окне у нуля
         (дешёво, защищает от превью), дальше — по всему треку.
 
+        Окно анализа растёт прогрессивно (0.5 → 1.0 → 1.5 → 2.5 с), порог корреляции
+        низкий (0.22): на тихом вступлении сигнал слабый, но форма уже узнаваема.
+        Так якорь удаётся получить на ~0.5–1 с раньше — именно этого не хватало
+        первым нотам kate said (5.66–6.33 с): без этого терялось до 5 объектов.
+
         ВАЖНО про `s_offset`: корреляционная привязка даёт «истинное» начало трека,
-        а RMS-детект — на ~25 мс позже (порог громкости пересекается на атаке).
-        Калибровка S=0.10 получена именно с RMS-якорем, поэтому при переходе на
-        корреляционный якорь S нужно уменьшить примерно на 0.025 (≈0.075).
+        а RMS-детект — позже (порог громкости пересекается на атаке). Калибровка
+        S=0.10 получена с RMS-якорем, поэтому при корреляционном якоре S ≈ 0.095.
         """
         self.rec.start()
         t_start = time.perf_counter()
         deadline = t_start + timeout
         best = None
+        prev = None
         while time.perf_counter() < deadline:
-            search_hint = hint if (time.perf_counter() - t_start) < timeout / 2 else None
-            res = self.rec.locate(self.ref, 1.5, hint=search_hint)
+            elapsed = time.perf_counter() - t_start
+            seconds = (0.5 if elapsed < 2.0 else
+                       1.0 if elapsed < 5.0 else
+                       1.5 if elapsed < 9.0 else 2.5)
+            search_hint = hint if elapsed < timeout / 2 else None
+            res = self.rec.locate(self.ref, seconds, hint=search_hint)
             if res is not None:
                 pos, score, t_end = res
                 if best is None or score > best[1]:
                     best = (pos, score, t_end)
                 if score >= min_score and -0.5 <= pos <= 12.0:
-                    self.t_end_pos, self.t_anchor = pos, t_end
-                    return t_end - pos
-            time.sleep(0.05)
+                    # требуем согласованности: позиция должна расти ровно со временем
+                    # (одна локация на тихом вступлении может быть ложной)
+                    if prev is not None:
+                        pos0, t0 = prev
+                        if abs((pos - pos0) - (t_end - t0)) < 0.05:
+                            self.t_end_pos, self.t_anchor = pos, t_end
+                            return t_end - pos
+                    prev = (pos, t_end)
+            time.sleep(0.02)
         if best is not None:
             print('  корреляция: лучший score %.2f (позиция %.2f) — ниже порога %.2f'
                   % (best[1], best[0], min_score))
+        return None
+
+    def validate_anchor_by_correlation(self, tol: float = 0.08, timeout: float = 8.0,
+                                       min_score: float = 0.35) -> bool:
+        """Проверить стартовый якорь по корреляции; при расхождении — переключиться.
+
+        Нужно для карт с тихим вступлением: детект по громкости ловит не первый
+        звук трека, а первый громкий (на kate said — на +1.95 с позже), и вся
+        шкала уезжает. Корреляция не зависит от громкости.
+
+        Возвращает True, если привязка заменена на корреляционную.
+        """
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            expected = self.t_end_pos + (time.perf_counter() - self.t_anchor)
+            res = self.rec.locate(self.ref, 1.5, hint=expected)
+            if res is not None:
+                pos, score, t_end = res
+                if score >= min_score:
+                    err = pos - (self.t_end_pos + (t_end - self.t_anchor))
+                    if abs(err) > tol:
+                        self.t_anchor, self.t_end_pos = t_end, pos
+                        return True
+                    return False
+            time.sleep(0.05)
+        return False
+
+    def start_position_watcher(self, timeout: float = 25.0, min_score: float = 0.45,
+                               seconds: float = 4.0) -> None:
+        """Фоновый поток: точный корреляционный T0 для коррекции предсказанного старта.
+
+        Нужен там, где корреляция не успевает к первой ноте (тихое вступление), но
+        предсказание Δ уже играет первые ноты: как только сигнал становится громким,
+        watcher даёт точную пару (t_end, позиция) — и шкала «прилипает» к реальности.
+        Длинная запись (4 с) и высокий порог score (0.45) — чтобы пик корреляции
+        был резким: на kate said короткие окна давали разброс ±60 мс.
+        """
+        import threading
+        self._pos_lock = threading.Lock()
+        self._pos_actual = None
+        self.rec.start()
+
+        def loop():
+            deadline = time.perf_counter() + timeout
+            while time.perf_counter() < deadline:
+                res = self.rec.locate(self.ref, seconds, hint=0.0)
+                if res is not None:
+                    pos, score, t_end = res
+                    if score >= min_score and 0.5 <= pos <= 30.0:
+                        with self._pos_lock:
+                            self._pos_actual = (t_end, pos)
+                        print('  [pos-watcher] корреляция: позиция %.2f c, score %.2f'
+                              % (pos, score))
+                        return
+                time.sleep(0.05)
+            print('  [pos-watcher] позиция не найдена за %.0f c' % timeout)
+
+        threading.Thread(target=loop, daemon=True, name='pos-watcher').start()
+
+    def apply_position_correction(self, tol: float = 1.0) -> float | None:
+        """Применить точный корреляционный якорь к предсказанной привязке (однократно)."""
+        if getattr(self, '_pos_lock', None) is None or not getattr(self, '_predicted', False):
+            return None
+        with self._pos_lock:
+            res = self._pos_actual
+            self._pos_actual = None
+        if res is None:
+            return None
+        t_end, pos = res
+        self._predicted = False
+        expected = self.t_end_pos + (t_end - self.t_anchor)
+        err = pos - expected
+        if abs(err) > tol:
+            return None
+        self.t_anchor, self.t_end_pos = t_end, pos
+        return err
+
+    def measure_delta_precise(self, t_click: float, timeout: float = 22.0,
+                              min_score: float = 0.45, seconds: float = 4.0):
+        """Точный замер Δ: длинная запись, длинное окно, двойная согласованность.
+
+        На картах с повторяющимся битом (kate said: lo-fi) корреляция по короткому
+        окну даёт широкий пик (±30–60 мс). Больше данных → резче пик: в калибровке
+        можно позволить себе 4 секунды записи, потому что мы не играем.
+        """
+        self.rec.start()
+        deadline = time.perf_counter() + timeout
+        prev = None
+        while time.perf_counter() < deadline:
+            res = self.rec.locate(self.ref, seconds, hint=0.0)
+            if res is not None:
+                pos, score, t_end = res
+                if score >= min_score and 0.5 <= pos <= 20.0:
+                    if prev is not None:
+                        pos0, t0 = prev
+                        if abs((pos - pos0) - (t_end - t0)) < 0.02:
+                            self.t_end_pos, self.t_anchor = pos, t_end
+                            return (t_end - pos) - t_click
+                    prev = (pos, t_end)
+            time.sleep(0.05)
         return None
 
     def predicted_start(self, t_click: float, delta: float) -> float:
@@ -241,8 +368,14 @@ class MapPlayer:
         self._reloc_thread = threading.Thread(target=loop, daemon=True, name='relocator')
         self._reloc_thread.start()
 
-    def apply_relocation(self, tol: float = 0.05) -> None:
-        """Применить готовый фоновый замер (если он согласуется с текущими часами)."""
+    def apply_relocation(self, tol: float = 0.25, gain: float = 0.15) -> None:
+        """Применить готовый фоновый замер: плавный сдвиг фазы часов (PLL), не скачок.
+
+        Проверка: жёсткая замена `t_anchor = t_end` давала мгновенный скачок фазы на
+        шум корреляции (±2–5 мс), что на окне OD10 (±10 мс) выбрасывало удары в OK.
+        Здесь ошибка подмешивается с коэффициентом `gain`: часы «догоняют» реальный
+        звук за несколько замеров, без разрывов. `tol` — защита от мусорных локаций.
+        """
         if getattr(self, '_reloc_lock', None) is None:
             return
         with self._reloc_lock:
@@ -254,8 +387,10 @@ class MapPlayer:
         if score < 0.30:
             return
         expected = self.t_end_pos + (t_end - self.t_anchor)
-        if abs(pos - expected) < tol:
-            self.t_end_pos, self.t_anchor = pos, t_end
+        err = pos - expected
+        if abs(err) >= tol:
+            return
+        self.t_anchor -= err * gain
 
     def wall_time(self, note_time_ms: float) -> float:
         """Wall-время (perf_counter) для ноты с временем карты `note_time_ms`."""
@@ -297,10 +432,39 @@ class MapPlayer:
         lead = distance_px / (speed_px_ms * 1000.0)
         return min(max(lead, min_lead), max_lead)
 
+    def auto_tune(self, dense_interval_ms: float = 70.0) -> None:
+        """Настроить кинематику по плотности карты (без ручных подборов).
+
+        На плотных картах (минимальный интервал < 70 мс, как kate said: 49 мс)
+        длинное упреждение и удержание клавиши съедают время на перелёт курсора.
+        Включаем «плотный» режим: быстрее считаем перелёт (6 px/мс) и короче
+        держим клавишу (18 мс вместо 25).
+        """
+        objs = sorted(self.bm.hit_objects, key=lambda o: o.time)
+        gaps = [objs[i + 1].time - objs[i].time for i in range(len(objs) - 1)]
+        self.min_gap_ms = min(gaps) if gaps else 1000.0
+        self.dense = self.min_gap_ms < dense_interval_ms
+        self.lead_speed_px_ms = DENSE_LEAD_SPEED if self.dense else 2.5
+        self.tap_hold_ms = DENSE_TAP_HOLD_MS if self.dense else DEFAULT_TAP_HOLD_MS
+        self.tail_hold_sec = DENSE_TAIL_HOLD if self.dense else DEFAULT_TAIL_HOLD
+
+    @staticmethod
+    def tail_hold_sec_for(margin_sec: float | None, default: float,
+                          min_hold: float = 0.003, fraction: float = 0.25) -> float:
+        """Удержание хвоста слайдера с оглядкой на следующий объект.
+
+        Проверка: на серии слайдеров длительностью 47.5 мс с интервалом 95 мс
+        фиксированные 15 мс удержания оставляли всего 32.5 мс на перелёт через
+        весь экран — голова следующего слайдера терялась (2 MISS на kate said).
+        """
+        if margin_sec is None:
+            return default
+        return min(default, max(min_hold, margin_sec * fraction))
+
     def _move_with_lead(self, sx: int, sy: int, t_wall: float) -> None:
         """Подвести курсор к (sx, sy) с упреждением по времени перелёта."""
         cx, cy = idrv.cursor_pos()
-        lead = self.move_lead_sec(math.hypot(sx - cx, sy - cy))
+        lead = self.move_lead_sec(math.hypot(sx - cx, sy - cy), self.lead_speed_px_ms)
         t_move = t_wall - lead
         now = time.perf_counter()
         if now < t_move:
@@ -312,9 +476,10 @@ class MapPlayer:
         self._move_with_lead(sx, sy, t_wall)
         self._wait_until(t_wall)
         self._send_errs.append(time.perf_counter() - t_wall)
-        idrv.tap_alternate()
+        idrv.tap_alternate(hold_ms=self.tap_hold_ms)
 
-    def _follow_slider(self, obj: HitObject, t_wall: float) -> None:
+    def _follow_slider(self, obj: HitObject, t_wall: float,
+                       t_next_wall: float | None = None) -> None:
         path = self.bm.slider_path(obj)
         if path is None or len(path) < 2:
             self._tap_circle(obj, t_wall)
@@ -350,10 +515,13 @@ class MapPlayer:
             sx, sy = idrv.osu_to_screen(x, y)
             idrv.move_absolute(sx, sy)
             time.sleep(0.004)
-        # удержание хвоста: фиксируем курсор на конечной точке ещё 15 мс
+        # удержание хвоста: фиксируем курсор на конечной точке. На плотных картах
+        # удержание сокращается пропорционально запасу до следующего объекта —
+        # иначе на коротких слайдерах (47 мс) не остаётся времени на перелёт.
         x, y = point_at_distance(path, length)
         idrv.move_absolute(*idrv.osu_to_screen(x, y))
-        time.sleep(0.015)
+        margin = None if t_next_wall is None else (t_next_wall - t_end_wall)
+        time.sleep(self.tail_hold_sec_for(margin, self.tail_hold_sec))
         idrv.hold_end(vk)
 
     def _spin(self, obj: HitObject, t_wall: float) -> None:
@@ -382,15 +550,23 @@ class MapPlayer:
         objs = sorted(self.bm.hit_objects, key=lambda o: o.time)
         stats = {'circles': 0, 'sliders': 0, 'spinners': 0, 'skipped': 0, 'late': 0}
 
-        for obj in objs:
+        for idx, obj in enumerate(objs):
             if until_time_ms is not None and obj.time > until_time_ms:
                 break
             t_wall = self.wall_time(obj.time)
+            t_next_wall = (self.wall_time(objs[idx + 1].time)
+                           if idx + 1 < len(objs) else None)
             now = time.perf_counter()
             # «догон»: если расчётное время уже прошло, но недавно (<150 мс) — играем
             # немедленно (голова слайдера сама догонит путь через прогресс), иначе пропуск
             if t_wall < now - 0.15:
                 stats['skipped'] += 1
+                late_by = now - t_wall
+                stats.setdefault('skipped_info', []).append(
+                    '%s t=%.0f мс (опоздание %.0f мс)' % (obj.kind, obj.time, late_by * 1000))
+                if verbose and len(stats['skipped_info']) <= 10:
+                    print('  ПРОПУСК: %s t=%.0f мс (опоздание %.0f мс)'
+                          % (obj.kind, obj.time, late_by * 1000))
                 continue
 
             # курсор подводится с упреждением внутри обработчиков (_move_with_lead)
@@ -398,7 +574,7 @@ class MapPlayer:
                 self._tap_circle(obj, t_wall)
                 stats['circles'] += 1
             elif obj.kind == 'slider':
-                self._follow_slider(obj, t_wall)
+                self._follow_slider(obj, t_wall, t_next_wall)
                 stats['sliders'] += 1
             elif obj.kind == 'spinner':
                 self._spin(obj, t_wall)
@@ -414,6 +590,13 @@ class MapPlayer:
                 stats['onset_err'] = err
                 if verbose:
                     print('  якорь уточнён по онсету: поправка %+.0f мс' % (err * 1000.0))
+
+            # уточняем предсказанный якорь точной корреляцией (один раз)
+            pos_err = self.apply_position_correction()
+            if pos_err is not None:
+                stats['pos_err'] = pos_err
+                if verbose:
+                    print('  якорь уточнён по корреляции: поправка %+.0f мс' % (pos_err * 1000.0))
 
             # применяем готовый фоновый замер (не блокирует цикл)
             self.apply_relocation()

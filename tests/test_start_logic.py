@@ -39,8 +39,8 @@ SliderTickRate:1
 """
 
 
-def make_player(first_ms: int) -> MapPlayer:
-    bm = Beatmap.from_text(TEMPLATE.format(first=first_ms, second=first_ms + 1000))
+def make_player(first_ms: int, gap_ms: int = 1000) -> MapPlayer:
+    bm = Beatmap.from_text(TEMPLATE.format(first=first_ms, second=first_ms + gap_ms))
     return MapPlayer(bm, REF, 'none', s_offset=0.10)
 
 
@@ -87,3 +87,40 @@ def test_free_key_falls_back_when_all_pressed():
     assert idrv.free_key(wait=0.01) == idrv.VK_Z
     idrv._mark_released(idrv.VK_Z)
     idrv._mark_released(idrv.VK_X)
+
+
+def test_tail_hold_shortens_with_next_object():
+    """Удержание хвоста слайдера сокращается, когда следующий объект близко."""
+    assert MapPlayer.tail_hold_sec_for(None, 0.015) == 0.015
+    assert abs(MapPlayer.tail_hold_sec_for(0.0475, 0.015) - 0.011875) < 1e-9
+    assert MapPlayer.tail_hold_sec_for(0.001, 0.015) == 0.003      # нижняя граница
+    assert MapPlayer.tail_hold_sec_for(0.0475, 0.005) == 0.005     # плотный режим
+
+
+def test_auto_tune_dense_and_normal():
+    """Плотная карта (49 мс) включает плотный режим; обычная — нет."""
+    dense = make_player(140, gap_ms=49)
+    dense.auto_tune()
+    assert dense.dense is True
+    assert dense.min_gap_ms == 49
+    assert dense.tap_hold_ms == 18.0
+    assert dense.lead_speed_px_ms == 6.0
+
+    normal = make_player(140, gap_ms=200)
+    normal.auto_tune()
+    assert normal.dense is False
+    assert normal.tap_hold_ms == 25.0
+    assert normal.lead_speed_px_ms == 2.5
+
+
+def test_relocation_is_smooth_not_a_jump():
+    """Релокация подмешивает ошибку с коэффициентом, а не перезаписывает якорь."""
+    import threading
+    p = make_player(140)
+    p.t_anchor, p.t_end_pos = 100.0, 0.0
+    p._reloc_lock = threading.Lock()
+    p._reloc_result = (1.05, 0.9, 101.0)   # ошибка +0.05 с
+    p.apply_relocation()
+    expected = 100.0 - 0.05 * 0.15
+    assert abs(p.t_anchor - expected) < 1e-9
+    assert p.t_anchor != 101.0 - 1.05       # не жёсткая замена

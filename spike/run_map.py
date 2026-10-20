@@ -39,6 +39,8 @@ SEARCH_BOX = (1560, 115)       # поле «найти...» в song select
 
 EARLIEST_MARGIN = 0.55         # раньше этого после клика онсетов быть не может
 DELTA_RANGE = (1.5, 8.0)       # допустимый диапазон Δ (загрузка + интро)
+S_ONSET = 0.10                 # компенсация S при якоре по громкости
+S_CORR = 0.095                 # компенсация S при якорном определении по корреляции
 
 
 def grab():
@@ -65,6 +67,12 @@ def is_playing(img):
     return count(img, (95, 940, 160, 1010), lambda r, g, b: r > 190 and g > 190 and b > 190) > 200
 
 
+def is_fail(img):
+    """Экран «провал»: жёлтый заголовок и две кнопки (нет зелёной «Продолжить»)."""
+    yellow = count(img, (800, 150, 1120, 250), lambda r, g, b: r > 190 and g > 150 and b < 110)
+    return yellow > 3000
+
+
 def ensure_pause(verbose=True, tries=8):
     """Привести игру к экрану паузы (возврат True при успехе)."""
     for _ in range(tries):
@@ -78,6 +86,12 @@ def ensure_pause(verbose=True, tries=8):
                 print('  состояние: игра -> Esc')
             idrv.key(27)
             time.sleep(1.4)
+            continue
+        if is_fail(img):
+            if verbose:
+                print('  состояние: провал -> Выйти')
+            idrv.click(960, 565)     # «Выйти» на экране провала
+            time.sleep(2.5)
             continue
         if is_songselect(img):
             if verbose:
@@ -169,14 +183,67 @@ def calibrate_delta(player: MapPlayer) -> float:
     return delta
 
 
+def calibrate_delta_corr(player: MapPlayer, warmups: int = 1, n: int = 2,
+                         max_tries: int = 7, timeout: float = 22.0,
+                         max_spread: float = 0.008):
+    """Δ (клик → T0) по корреляции: прогревочный замер + два согласованных.
+
+    Первый запуск после паузы «холодный» (карта ещё подгружается): его Δ заметно
+    больше — на kate said серия сходилась 1.684 → 1.647 → 1.639 → 1.623 → 1.620.
+    Поэтому первые `warmups` замеров не учитываются, а решение принимается по двум
+    последним: если их разброс ≤ 8 мс (четверть окна 300 на OD10) — играем по их
+    медиане. Замеры с Δ < 0.8 с отбрасываются как физически невозможные (ложный
+    пик корреляции). Если стабильности нет — None, и прогон отменяется: лучше не
+    играть, чем сыграть первые ноты мимо.
+    """
+    deltas: list[float] = []
+    for _ in range(max_tries):
+        idrv.move_absolute(*PAUSE_RETRY)
+        time.sleep(0.08)
+        t_click = time.perf_counter()
+        idrv.click()
+        d = player.measure_delta_precise(t_click, timeout=timeout)
+        if d is not None and d >= 0.8:
+            deltas.append(d)
+            recent = deltas[warmups:]
+            print('  калибровка Δ(корр): %.3f c%s'
+                  % (d, '' if not deltas[:warmups] or d not in deltas[:warmups] else ' (прогрев)'))
+            if len(recent) >= n and (max(recent[-n:]) - min(recent[-n:])) <= max_spread:
+                break
+        else:
+            print('  калибровка Δ(корр): замер не удался%s'
+                  % ('' if d is None else ' (физически невозможная Δ %.3f)' % d))
+        if not ensure_pause():
+            return None
+    recent = deltas[warmups:] if len(deltas) > warmups else deltas
+    if not recent:
+        print('калибровка Δ(корр) не удалась: нет валидных замеров после прогрева')
+        return None
+    if len(recent) >= 2:
+        spread = max(recent[-2:]) - min(recent[-2:])
+        if spread > 0.02:
+            print('калибровка Δ(корр) нестабильна: последние замеры расходятся на %.0f мс — '
+                  'прогон отменяется' % (spread * 1000))
+            return None
+        delta = statistics.median(recent[-2:])
+        print('Δ(корр) = %.3f c (прогрев: %s; рабочие замеры: %s, разброс %.0f мс)'
+              % (delta, ', '.join('%.3f' % d for d in deltas[:warmups]) or '—',
+                 ', '.join('%.3f' % d for d in recent[-2:]), spread * 1000))
+    else:
+        delta = recent[0]
+        print('Δ(корр) = %.3f c (единственный валидный замер)' % delta)
+    return delta
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description='Прогон карты osu! внешним агентом')
     ap.add_argument('--osu', required=True, help='путь к файлу карты .osu')
     ap.add_argument('--audio', required=True, help='путь к аудиофайлу карты (mp3/ogg)')
     ap.add_argument('--device', default='Speakers (Realtek(R) Audio)',
                     help='устройство вывода для loopback-захвата')
-    ap.add_argument('--s-offset', type=float, default=0.10,
-                    help='компенсация S: аудио-латентность + ввод (сек)')
+    ap.add_argument('--s-offset', type=float, default=None,
+                    help='компенсация S (по умолчанию подбирается автоматически '
+                         'по типу якоря: 0.10 для онсета, 0.095 для корреляции)')
     ap.add_argument('--delta', type=float, default=None,
                     help='задать Δ вручную (иначе калибровка)')
     ap.add_argument('--anchor', choices=('auto', 'onset', 'corr'), default='auto',
@@ -211,8 +278,13 @@ def main(argv=None) -> int:
     ref = load_audio(args.audio)
     ref_onset = first_sound_time(ref)
     first_note = min(o.time for o in bm.hit_objects) / 1000.0
-    player = MapPlayer(bm, ref, args.device, s_offset=args.s_offset)
+    player = MapPlayer(bm, ref, args.device,
+                       s_offset=(args.s_offset if args.s_offset is not None else S_ONSET))
     player.rec.start()   # захват звука должен идти до первого клика запуска
+    player.auto_tune()
+    print('кинематика: мин. интервал %.0f мс -> режим %s (тап %.0f мс, удержание хвоста %.0f мс, перелёт %.1f px/мс)'
+          % (player.min_gap_ms, 'плотный' if player.dense else 'обычный',
+             player.tap_hold_ms, player.tail_hold_sec * 1000, player.lead_speed_px_ms))
     need_pred = player.needs_predicted_start()
     print('карта: %s | объектов: %d | первая нота: %.3f c | первый звук трека: %.3f c'
           % (bm.title, len(bm.hit_objects), first_note, ref_onset))
@@ -231,6 +303,7 @@ def main(argv=None) -> int:
         return 2
 
     delta = None
+    delta_corr = None
     if need_pred:
         if args.delta is not None:
             delta = args.delta
@@ -240,6 +313,17 @@ def main(argv=None) -> int:
             if delta is None:
                 player.stop()
                 return 4
+        if not ensure_pause():
+            player.stop()
+            return 2
+    elif args.anchor in ('auto', 'corr'):
+        # поздняя первая нота: готовим предсказание Δ по корреляции (прогрев кэша),
+        # чтобы играть первые ноты, пока корреляция ещё не видит тихое вступление
+        delta_corr = args.delta if args.delta is not None else calibrate_delta_corr(player)
+        if delta_corr is None:
+            print('бой отменён: калибровка Δ(корр) нестабильна — надёжнее перезапустить')
+            player.stop()
+            return 6
         if not ensure_pause():
             player.stop()
             return 2
@@ -261,29 +345,30 @@ def main(argv=None) -> int:
                                    timeout=12.0, t0=t_click)
         print('бой: T0 ожидается в +%.3f c, первая нота в +%.3f c'
               % (delta, delta + first_note - player.s))
+    elif delta_corr is not None:
+        player.predicted_start(t_click, delta_corr)
+        player.start_position_watcher(timeout=25.0)
+        print('бой: ПРЕДСКАЗАННЫЙ старт Δ(корр) = %.3f c; первая нота в +%.3f c'
+              % (delta_corr, delta_corr + first_note - player.s))
+        if args.s_offset is None:
+            player.s = S_CORR
+        print('бой: S = %.3f (авто для корреляционной метрики)' % player.s)
     else:
-        t_anchor = None
-        if args.anchor in ('auto', 'onset'):
-            t_anchor = player.wait_for_onset_anchor(t_click, earliest_margin=EARLIEST_MARGIN,
-                                                    timeout=8.0)
-            if t_anchor is not None:
-                print('бой: якорь по онсету +%.3f c после клика (первая нота в +%.3f c)'
-                      % (t_anchor - t_click, t_anchor - t_click + first_note - player.s))
-        if t_anchor is None:
-            if args.anchor == 'onset':
-                print('бой: онсет не найден — прогон отменён')
-                player.stop()
-                return 5
-            print('бой: якорь по КОРРЕЛЯЦИИ (тихое вступление: громкость ловит не первый звук)')
-            t_pos = player.wait_for_position_anchor(timeout=25.0)
-            if t_pos is None:
-                print('бой: не удалось определить начало трека — прогон отменён')
-                player.stop()
-                return 5
-            print('бой: корреляционный якорь: T0 +%.3f c после клика (позиция %.2f c)'
-                  % (t_pos - t_click, player.t_end_pos))
-            print('бой: для корреляционного якоря S ≈ %.3f (RMS-калибровка S=0.10 '
-                  'включает смещение порога ~25 мс)' % max(0.0, player.s - 0.025))
+        t_anchor = player.wait_for_onset_anchor(t_click, earliest_margin=EARLIEST_MARGIN,
+                                               timeout=6.0)
+        if t_anchor is not None:
+            print('бой: якорь по онсету +%.3f c после клика (первая нота в +%.3f c)'
+                  % (t_anchor - t_click, t_anchor - t_click + first_note - player.s))
+            if args.anchor == 'auto' and (first_note + ref_onset - player.s) > 2.5:
+                if player.validate_anchor_by_correlation(tol=0.08, timeout=8.0):
+                    print('бой: онсет НЕ подтверждён корреляцией -> якорь по корреляции')
+                    if args.s_offset is None:
+                        player.s = S_CORR
+                    print('бой: S = %.3f (авто для корреляционного якоря)' % player.s)
+        else:
+            print('бой: не удалось определить начало трека — прогон отменён')
+            player.stop()
+            return 5
 
     player.start_relocator()
     import gc

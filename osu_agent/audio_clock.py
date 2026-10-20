@@ -35,17 +35,39 @@ class AudioMatch:
     duration_sec: float
 
 
+def _resample_linear(x: np.ndarray, sr_from: int, sr_to: int,
+                     block: int = 1_000_000) -> np.ndarray:
+    """Линейный ресемплинг блоками: та же математика, что `np.interp`, но память O(block).
+
+    На шестиминутном треке `np.interp` с массивами индексов на весь сигнал требует
+    сотни МБ и в долгой сессии падает с MemoryError (проверено на kate said).
+    """
+    n_out = int(round(len(x) * sr_to / sr_from))
+    if n_out <= 1 or len(x) <= 1:
+        return np.zeros(max(n_out, 0), dtype=np.float32)
+    ratio = (len(x) - 1) / (n_out - 1)
+    out = np.empty(n_out, dtype=np.float32)
+    for s in range(0, n_out, block):
+        e = min(s + block, n_out)
+        pos = np.arange(s, e, dtype=np.float64) * ratio
+        i0 = pos.astype(np.int64)
+        i1 = np.minimum(i0 + 1, len(x) - 1)
+        frac = (pos - i0).astype(np.float32)
+        left = x[i0]
+        out[s:e] = left + (x[i1] - left) * frac
+    return out
+
+
 def load_audio(path: str | Path, sr: int = SR) -> np.ndarray:
-    """Прочитать аудио в моно float32 с заданной частотой (линейный ресемплинг)."""
+    """Прочитать аудио в моно float32 с заданной частотой (блочный ресемплинг)."""
     import soundfile as sf
 
     data, file_sr = sf.read(str(path), dtype='float32', always_2d=True)
     mono = data.mean(axis=1)
+    del data
     if file_sr != sr:
-        n_out = int(round(len(mono) * sr / file_sr))
-        idx = np.linspace(0, len(mono) - 1, n_out, dtype=np.float64)
-        mono = np.interp(idx, np.arange(len(mono)), mono).astype(np.float32)
-    return mono
+        mono = _resample_linear(mono, file_sr, sr)
+    return mono.astype(np.float32, copy=False)
 
 
 def record_loopback(device_name: str, seconds: float, sr: int = SR) -> np.ndarray:
