@@ -6,17 +6,26 @@
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
 ![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D4)
-![SS on 10.69-star OD10](https://img.shields.io/badge/SS-10.69-star%20OD10-ff66aa)
+![SS on 10.69-star OD10](https://img.shields.io/badge/SS-10.69--star%20OD10-ff66aa)
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
 [Русская версия](README.ru.md)
 
 > Reads the beatmap, synchronizes with the music through a sound-card loopback, and presses the keys at the right millisecond — without touching the game.
 
-[▶ 58-second demo (10.69-star, no audio)](docs/demo/ss-kate-said.mp4)
+[▶ Full demo: 58 seconds (10.69-star, no audio)](docs/demo/ss-kate-said.mp4)
+
+<img src="docs/demo/ss-kate-said-preview.gif" width="640" alt="Gameplay preview: sliders and streams at 10.69 stars">
+
+*Live gameplay (14 s): the closing section of the map, combo over 2000.*
 
 <img src="docs/evidence/ss-kate-said-45.png" width="520" alt="Result screen: SS, 100.00%, GREAT 1713/1713, MISS 0">
 
 *Result screen of the 10.69-star map: 100.00%, GREAT 1713/1713, MISS 0, MAX COMBO 2360/2360.*
+
+<a href="https://vshymanskyy.github.io/StandWithUkraine/">
+  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
+</a>
 
 </div>
 

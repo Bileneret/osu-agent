@@ -6,17 +6,26 @@
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![Лицензия: MIT](https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-green)
 ![Платформа: Windows](https://img.shields.io/badge/%D0%9F%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Windows-0078D4)
-![SS на 10.69-star OD10](https://img.shields.io/badge/SS-10.69-star%20OD10-ff66aa)
+![SS на 10.69-star OD10](https://img.shields.io/badge/SS-10.69--star%20OD10-ff66aa)
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
 [English version](README.md)
 
 > Читает карту, синхронизируется с музыкой через loopback звуковой карты и нажимает клавиши в нужную миллисекунду — не касаясь игры.
 
-[▶ демо, 58 секунд (10.69-star, без звука)](docs/demo/ss-kate-said.mp4)
+[▶ Полное демо: 58 секунд (10.69-star, без звука)](docs/demo/ss-kate-said.mp4)
+
+<img src="docs/demo/ss-kate-said-preview.gif" width="640" alt="Превью геймплея: слайдеры и стримы на 10.69 звёзд">
+
+*Живой геймплей (14 с): финальный участок карты, комбо за 2000.*
 
 <img src="docs/evidence/ss-kate-said-45.png" width="520" alt="Экран результатов: SS, 100.00%, GREAT 1713/1713, MISS 0">
 
 *Экран результатов карты 10.69-star: 100.00%, GREAT 1713/1713, MISS 0, комбо 2360/2360.*
+
+<a href="https://vshymanskyy.github.io/StandWithUkraine/">
+  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
+</a>
 
 </div>
 
