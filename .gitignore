@@ -30,3 +30,6 @@ ForHuman/
 *.key
 secrets/
 config.local.json
+
+# исходные записи демо (в репозиторий идёт только сжатая версия)
+docs/demo/onl-*
