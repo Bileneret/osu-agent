@@ -47,15 +47,42 @@ ctypes.windll.winmm.timeBeginPeriod(1)
 HIGH_PRIORITY_CLASS = 0x00000080
 THREAD_PRIORITY_TIME_CRITICAL = 15
 
+# 64-битные хэндлы: без явных restype/argtypes ctypes обрезает их до 32 бит,
+# и вызовы «успешно» ничего не делают (проверено: приоритет оставался 0x20).
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+kernel32.GetCurrentThread.restype = wintypes.HANDLE
+kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.SetPriorityClass.restype = wintypes.BOOL
+kernel32.GetPriorityClass.argtypes = [wintypes.HANDLE]
+kernel32.GetPriorityClass.restype = wintypes.DWORD
+kernel32.SetThreadPriority.argtypes = [wintypes.HANDLE, ctypes.c_int]
+kernel32.SetThreadPriority.restype = wintypes.BOOL
+kernel32.GetThreadPriority.argtypes = [wintypes.HANDLE]
+kernel32.GetThreadPriority.restype = ctypes.c_int
+kernel32.SetThreadAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+kernel32.SetThreadAffinityMask.restype = ctypes.c_size_t
+
 
 def boost_priority() -> bool:
     """Поднять приоритет процесса и текущего потока (идемпотентно)."""
     try:
-        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), HIGH_PRIORITY_CLASS)
-        kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)
-        return True
+        ok_class = bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
+                                                  HIGH_PRIORITY_CLASS))
+        ok_thread = bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(),
+                                                    THREAD_PRIORITY_TIME_CRITICAL))
+        return ok_class and ok_thread
     except Exception:
         return False
+
+
+def priority_info() -> str:
+    """Текущие приоритеты процесса и потока (для логов прогона)."""
+    try:
+        pc = kernel32.GetPriorityClass(kernel32.GetCurrentProcess())
+        tp = kernel32.GetThreadPriority(kernel32.GetCurrentThread())
+        return 'class=0x%X thread=%d' % (pc, tp)
+    except Exception:
+        return 'неизвестно'
 
 
 def set_cpu_affinity(index: int | None) -> bool:
@@ -68,8 +95,8 @@ def set_cpu_affinity(index: int | None) -> bool:
     if index is None:
         return False
     try:
-        mask = 1 << int(index)
-        return bool(kernel32.SetThreadAffinityMask(kernel32.GetCurrentThread(), mask))
+        prev = kernel32.SetThreadAffinityMask(kernel32.GetCurrentThread(), 1 << int(index))
+        return prev != 0
     except Exception:
         return False
 

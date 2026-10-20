@@ -194,6 +194,7 @@ def main(argv=None) -> int:
         core = args.cpu if args.cpu >= 0 else max(0, (os.cpu_count() or 2) - 1)
         print('affinity:', idrv.set_cpu_affinity(core), '(ядро %d из %d)'
               % (core, os.cpu_count() or 0))
+    print('приоритеты:', idrv.priority_info())
 
     hwnd = idrv.find_window()
     print('activate:', idrv.activate(hwnd), '| foreground:', idrv.foreground_title())
