@@ -4,9 +4,9 @@ activate: True | foreground: osu! - you are an angel - kate said [it's fine to d
 кинематика: мин. интервал 49 мс -> режим плотный (тап 18 мс, удержание хвоста 5 мс, перелёт 6.0 px/мс)
 карта: you are an angel — kate said [it's fine to dream] | объектов: 1713 | первая нота: 5.659 c | первый звук трека: 3.095 c
 стратегия старта: прямой старт по онсету
-D:\BOT\OSU\spike\run_map.py:48: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+spike\run_map.py:48: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
   with mss.mss() as sct:
-D:\BOT\OSU\spike\run_map.py:54: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+spike\run_map.py:54: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
   return sum(1 for r, g, b in img.crop(box).getdata() if pred(r, g, b))
   состояние: пауза
   калибровка Δ(корр): 1.630 c (прогрев)
@@ -15,7 +15,7 @@ D:\BOT\OSU\spike\run_map.py:54: DeprecationWarning: Image.Image.getdata is depre
   калибровка Δ(корр): 1.627 c
   состояние: игра -> Esc
   состояние: пауза
-D:\BOT\OSU\.venv\Lib\site-packages\soundcard\mediafoundation.py:772: SoundcardRuntimeWarning: data discontinuity in recording
+site-packages\soundcard\mediafoundation.py:772: SoundcardRuntimeWarning: data discontinuity in recording
   warnings.warn("data discontinuity in recording", SoundcardRuntimeWarning)
   калибровка Δ(корр): 1.625 c
 Δ(корр) = 1.626 c (прогрев: 1.630; рабочие замеры: 1.627, 1.625, разброс 2 мс)

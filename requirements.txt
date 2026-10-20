@@ -1,9 +1,11 @@
 # Runtime — версии зафиксированы по рабочему окружению (Python 3.12, Windows)
 numpy==2.5.4
 soundfile==0.14.0
-SoundCard==0.4.6
+soundcard==0.4.6
+sounddevice==0.5.6
 mss==10.2.0
 pillow==13.0.0
+rosu-pp-py==4.0.2
 
 # Разработка и тесты (набор tests/ офлайн: без игры и без звукового устройства)
 pytest==9.1.1

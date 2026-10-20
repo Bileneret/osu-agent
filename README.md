@@ -3,10 +3,10 @@
 # osu! agent: plays osu!lazer from the outside
 
 [![CI](https://github.com/Bileneret/osu-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Bileneret/osu-agent/actions/workflows/ci.yml)
-![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![License: MIT](https://img.shields.io/badge/License-MIT-green)
-![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D4)
-![SS on 10.69-star OD10](https://img.shields.io/badge/SS-10.69--star%20OD10-ff66aa)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
+[![SS on 10.69-star](https://img.shields.io/badge/SS%2010.69--star-100.00%25%20OD10-brightgreen.svg)](#key-metrics)
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
 [Русская версия](README.ru.md)

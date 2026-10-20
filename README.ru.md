@@ -3,10 +3,10 @@
 # osu!-агент: играет в osu!lazer снаружи
 
 [![CI](https://github.com/Bileneret/osu-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Bileneret/osu-agent/actions/workflows/ci.yml)
-![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![Лицензия: MIT](https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-green)
-![Платформа: Windows](https://img.shields.io/badge/%D0%9F%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Windows-0078D4)
-![SS на 10.69-star OD10](https://img.shields.io/badge/SS-10.69--star%20OD10-ff66aa)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Лицензия: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Платформа](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
+[![SS на 10.69-star](https://img.shields.io/badge/SS%2010.69--star-100.00%25%20OD10-brightgreen.svg)](#key-metrics)
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
 [English version](README.md)
