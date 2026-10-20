@@ -179,10 +179,17 @@ def main(argv=None) -> int:
                     help='компенсация S: аудио-латентность + ввод (сек)')
     ap.add_argument('--delta', type=float, default=None,
                     help='задать Δ вручную (иначе калибровка)')
+    ap.add_argument('--anchor', choices=('auto', 'onset', 'corr'), default='auto',
+                    help='привязка старта: onset — по громкости, corr — по корреляции '
+                         '(для карт с тихим вступлением: громкость ловит не первый звук), '
+                         'auto — onset с переходом на corr, если онсет не найден')
     ap.add_argument('--search', default=None,
                     help='строка для поиска карты в song select перед прогоном')
     ap.add_argument('--test', action='store_true',
                     help='быстрый тест: сыграть только первый объект и снять паузу')
+    ap.add_argument('--until', type=float, default=None,
+                    help='играть только до этого времени карты (мс) и снять паузу '
+                         '(для быстрой подстройки S по показанной точности)')
     ap.add_argument('--shot', default='spike/shots/run_map',
                     help='префикс имён скриншотов')
     ap.add_argument('--cpu', type=int, default=None,
@@ -255,26 +262,40 @@ def main(argv=None) -> int:
         print('бой: T0 ожидается в +%.3f c, первая нота в +%.3f c'
               % (delta, delta + first_note - player.s))
     else:
-        t_onset = player.wait_for_onset_anchor(t_click, earliest_margin=EARLIEST_MARGIN,
-                                               timeout=15.0)
-        if t_onset is None:
-            print('бой: онсет не найден — прогон отменён')
-            player.stop()
-            return 5
-        print('бой: якорь по онсету +%.3f c после клика (первая нота в +%.3f c)'
-              % (t_onset - t_click, t_onset - t_click + first_note - player.s))
+        t_anchor = None
+        if args.anchor in ('auto', 'onset'):
+            t_anchor = player.wait_for_onset_anchor(t_click, earliest_margin=EARLIEST_MARGIN,
+                                                    timeout=8.0)
+            if t_anchor is not None:
+                print('бой: якорь по онсету +%.3f c после клика (первая нота в +%.3f c)'
+                      % (t_anchor - t_click, t_anchor - t_click + first_note - player.s))
+        if t_anchor is None:
+            if args.anchor == 'onset':
+                print('бой: онсет не найден — прогон отменён')
+                player.stop()
+                return 5
+            print('бой: якорь по КОРРЕЛЯЦИИ (тихое вступление: громкость ловит не первый звук)')
+            t_pos = player.wait_for_position_anchor(timeout=25.0)
+            if t_pos is None:
+                print('бой: не удалось определить начало трека — прогон отменён')
+                player.stop()
+                return 5
+            print('бой: корреляционный якорь: T0 +%.3f c после клика (позиция %.2f c)'
+                  % (t_pos - t_click, player.t_end_pos))
+            print('бой: для корреляционного якоря S ≈ %.3f (RMS-калибровка S=0.10 '
+                  'включает смещение порога ~25 мс)' % max(0.0, player.s - 0.025))
 
     player.start_relocator()
     import gc
     gc.disable()   # паузы сборщика мусора в момент удара — лишние миллисекунды
-    if args.test:
-        stats = player.play(until_time_ms=600, verbose=False)
+    if args.test or args.until is not None:
+        stats = player.play(until_time_ms=(600 if args.test else args.until), verbose=False)
         print('исполнено: %s' % stats)
         idrv.key(27)
         time.sleep(1.5)
         img = grab()
         img.save(args.shot + '_pause.png')
-        print('скриншот паузы: %s_pause.png' % args.shot)
+        print('скриншот паузы (видна точность попытки): %s_pause.png' % args.shot)
         player.stop()
         return 0
 

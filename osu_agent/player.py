@@ -35,6 +35,7 @@ class MapPlayer:
         self.t_end_pos: float | None = None   # позиция трека на момент t_anchor
         self.t_anchor: float | None = None    # perf_counter
         self.ref_onset: float = first_sound_time(ref_audio)  # время первого звука трека
+        self._send_errs: list[float] = []     # телеметрия: задержка отправки удара
 
     # ---- синхронизация ----
 
@@ -80,6 +81,39 @@ class MapPlayer:
         self.t_end_pos = self.ref_onset
         self.t_anchor = t_onset
         return t_onset
+
+    def wait_for_position_anchor(self, timeout: float = 20.0, min_score: float = 0.35,
+                                 hint: float = 0.0):
+        """Прямой старт по КОРРЕЛЯЦИИ: якорь — начало трека, найденное по форме сигнала.
+
+        Нужен для карт с тихим вступлением: детект по громкости не срабатывает, если
+        первый звук тише фонового уровня. Первые `timeout/2` ищем в окне у нуля
+        (дешёво, защищает от превью), дальше — по всему треку.
+
+        ВАЖНО про `s_offset`: корреляционная привязка даёт «истинное» начало трека,
+        а RMS-детект — на ~25 мс позже (порог громкости пересекается на атаке).
+        Калибровка S=0.10 получена именно с RMS-якорем, поэтому при переходе на
+        корреляционный якорь S нужно уменьшить примерно на 0.025 (≈0.075).
+        """
+        self.rec.start()
+        t_start = time.perf_counter()
+        deadline = t_start + timeout
+        best = None
+        while time.perf_counter() < deadline:
+            search_hint = hint if (time.perf_counter() - t_start) < timeout / 2 else None
+            res = self.rec.locate(self.ref, 1.5, hint=search_hint)
+            if res is not None:
+                pos, score, t_end = res
+                if best is None or score > best[1]:
+                    best = (pos, score, t_end)
+                if score >= min_score and -0.5 <= pos <= 12.0:
+                    self.t_end_pos, self.t_anchor = pos, t_end
+                    return t_end - pos
+            time.sleep(0.05)
+        if best is not None:
+            print('  корреляция: лучший score %.2f (позиция %.2f) — ниже порога %.2f'
+                  % (best[1], best[0], min_score))
+        return None
 
     def predicted_start(self, t_click: float, delta: float) -> float:
         """Привязка по ПРЕДСКАЗАНИЮ старта: t_onset = t_click + delta + ref_onset.
@@ -277,6 +311,7 @@ class MapPlayer:
         sx, sy = idrv.osu_to_screen(obj.x, obj.y)
         self._move_with_lead(sx, sy, t_wall)
         self._wait_until(t_wall)
+        self._send_errs.append(time.perf_counter() - t_wall)
         idrv.tap_alternate()
 
     def _follow_slider(self, obj: HitObject, t_wall: float) -> None:
@@ -297,6 +332,7 @@ class MapPlayer:
         sx0, sy0 = idrv.osu_to_screen(obj.x, obj.y)
         self._move_with_lead(sx0, sy0, t_wall)
         self._wait_until(t_wall)
+        self._send_errs.append(time.perf_counter() - t_wall)
         # клавиша, которая точно свободна: KeyUp предыдущего тапа может ещё идти
         vk = idrv.free_key((VK_Z, VK_X))
         idrv.hold_start(vk)  # держим кнопку на всё тело слайдера (защита от релизера)
@@ -381,4 +417,10 @@ class MapPlayer:
 
             # применяем готовый фоновый замер (не блокирует цикл)
             self.apply_relocation()
+        if self._send_errs:
+            errs = sorted(self._send_errs)
+            n = len(errs)
+            stats['send_p50_ms'] = round(errs[n // 2] * 1000, 2)
+            stats['send_p95_ms'] = round(errs[min(n - 1, int(n * 0.95))] * 1000, 2)
+            stats['send_max_ms'] = round(errs[-1] * 1000, 2)
         return stats
