@@ -9,7 +9,15 @@
 [![SS на 10.69-star](https://img.shields.io/badge/SS%2010.69--star-100.00%25%20OD10-brightgreen.svg)](#key-metrics)
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
+<a href="https://vshymanskyy.github.io/StandWithUkraine/">
+  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
+</a>
+
+---
+
 [English version](README.md)
+
+---
 
 > Читает карту, синхронизируется с музыкой через loopback звуковой карты и нажимает клавиши в нужную миллисекунду — не касаясь игры.
 
@@ -22,10 +30,6 @@
 <img src="docs/evidence/ss-kate-said-45.png" width="520" alt="Экран результатов: SS, 100.00%, GREAT 1713/1713, MISS 0">
 
 *Экран результатов карты 10.69-star: 100.00%, GREAT 1713/1713, MISS 0, комбо 2360/2360.*
-
-<a href="https://vshymanskyy.github.io/StandWithUkraine/">
-  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
-</a>
 
 </div>
 

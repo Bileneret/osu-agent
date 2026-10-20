@@ -9,7 +9,15 @@
 [![SS on 10.69-star](https://img.shields.io/badge/SS%2010.69--star-100.00%25%20OD10-brightgreen.svg)](#key-metrics)
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://vshymanskyy.github.io/StandWithUkraine/)
 
+<a href="https://vshymanskyy.github.io/StandWithUkraine/">
+  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
+</a>
+
+---
+
 [Русская версия](README.ru.md)
+
+---
 
 > Reads the beatmap, synchronizes with the music through a sound-card loopback, and presses the keys at the right millisecond — without touching the game.
 
@@ -22,10 +30,6 @@
 <img src="docs/evidence/ss-kate-said-45.png" width="520" alt="Result screen: SS, 100.00%, GREAT 1713/1713, MISS 0">
 
 *Result screen of the 10.69-star map: 100.00%, GREAT 1713/1713, MISS 0, MAX COMBO 2360/2360.*
-
-<a href="https://vshymanskyy.github.io/StandWithUkraine/">
-  <img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg" width="450" alt="Stand With Ukraine">
-</a>
 
 </div>
 
